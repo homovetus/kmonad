@@ -16,11 +16,13 @@ module KMonad.Args.Types
 
     -- * $but
   , DefButton(..)
+  , ImplArnd(..)
 
     -- * $tls
   , DefSetting(..)
   , DefSettings
   , DefAlias
+  , DefLayerSetting(..)
   , DefLayer(..)
   , DefSrc(..)
   , KExpr(..)
@@ -33,6 +35,7 @@ module KMonad.Args.Types
   , AsKExpr(..)
   , AsDefSetting(..)
   , HasDefSrc(..)
+  , AsDefLayerSetting(..)
 ) where
 
 
@@ -74,6 +77,9 @@ data DefButton
   | KMultiTap [(Int, DefButton)] DefButton -- ^ Do things depending on tap-count
   | KStepped [DefButton]                   -- ^ Do different things, one-by-one
   | KAround DefButton DefButton            -- ^ Wrap 1 button around another
+  | KAroundOnly DefButton DefButton        -- ^ Wrap 1 button only around another
+  | KAroundWhenAlone DefButton DefButton   -- ^ Wrap 1 button around another when it's "alone"
+  | KAroundImplicit DefButton DefButton    -- ^ Wrap 1 button around another
   | KAroundNextTimeout Int DefButton DefButton
   | KTapMacro [DefButton] (Maybe Int)
     -- ^ Sequence of buttons to tap, possible delay between each press
@@ -89,8 +95,17 @@ data DefButton
   | KBeforeAfterNext DefButton DefButton   -- ^ Surround a future button in a before and after tap
   | KTrans                                 -- ^ Transparent button that does nothing
   | KBlock                                 -- ^ Button that catches event
-  deriving Show
+  deriving (Show, Eq, Typeable, Data)
 
+instance Plated DefButton
+
+-- | Possible values for implicit around
+data ImplArnd
+  = IADisabled
+  | IAAround
+  | IAAroundOnly
+  | IAAroundWhenAlone
+  deriving (Show, Eq)
 
 --------------------------------------------------------------------------------
 -- $cfg
@@ -124,19 +139,25 @@ data DefSrc = DefSrc
   { _srcName  :: Maybe Text -- ^ A unique name used to refer to this layer.
   , _keycodes :: [Keycode]  -- ^ Layer settings containing also the buttons.
   }
-  deriving Show
+  deriving (Show, Eq)
 makeClassy ''DefSrc
 
 -- | A mapping from names to button tokens
 type DefAlias = [(Text, DefButton)]
 
+data DefLayerSetting
+  = LSrcName Text
+  | LImplArnd ImplArnd
+  | LButton DefButton
+  deriving (Show, Eq)
+makeClassyPrisms ''DefLayerSetting
+
 -- | A layer of buttons
 data DefLayer = DefLayer
-  { _layerName         :: Text        -- ^ A unique name used to refer to this layer
-  , _associatedSrcName :: Maybe Text  -- ^ The source used by the layer
-  , _buttons           :: [DefButton] -- ^ A list of button tokens
+  { _layerName :: Text
+  , _layerSettings :: [DefLayerSetting]
   }
-  deriving Show
+  deriving (Show, Eq)
 
 
 --------------------------------------------------------------------------------
@@ -149,25 +170,25 @@ data IToken
   = KDeviceSource FilePath
   | KLowLevelHookSource
   | KIOKitSource (Maybe Text)
-  deriving Show
+  deriving (Show)
 
 -- | All different output-tokens KMonad can take
 data OToken
   = KUinputSink Text (Maybe Text)
   | KSendEventSink (Maybe (Int, Int))
   | KKextSink
-  deriving Show
+  deriving (Show)
 
 -- | All possible single settings
 data DefSetting
   = SIToken      IToken
   | SOToken      OToken
   | SCmpSeq      DefButton
-  | SInitStr     Text
   | SFallThrough Bool
   | SAllowCmd    Bool
   | SCmpSeqDelay Int
-  deriving Show
+  | SImplArnd    ImplArnd
+  deriving (Show)
 makeClassyPrisms ''DefSetting
 
 -- | 'Eq' instance for a 'DefSetting'. Because every one of these options may be
@@ -177,9 +198,9 @@ instance Eq DefSetting where
   SIToken{}      == SIToken{}      = True
   SOToken{}      == SOToken{}      = True
   SCmpSeq{}      == SCmpSeq{}      = True
-  SInitStr{}     == SInitStr{}     = True
   SFallThrough{} == SFallThrough{} = True
   SAllowCmd{}    == SAllowCmd{}    = True
+  SImplArnd{}    == SImplArnd{}    = True
   _              == _              = False
 
 -- | A list of different 'DefSetting' values
@@ -194,7 +215,7 @@ data KExpr
   | KDefSrc   DefSrc
   | KDefLayer DefLayer
   | KDefAlias DefAlias
-  deriving Show
+  deriving (Show, Eq)
 makeClassyPrisms ''KExpr
 
 

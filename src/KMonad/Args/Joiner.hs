@@ -50,7 +50,7 @@ import KMonad.Keyboard.IO.Mac.KextSink
 
 import Control.Monad.Except
 
-import RIO.List (headMaybe, intersperse, uncons)
+import RIO.List (headMaybe, intersperse, uncons, sort, group)
 import RIO.Partial (fromJust)
 import qualified KMonad.Util.LayerStack  as L
 import qualified RIO.HashMap      as M
@@ -66,12 +66,15 @@ data JoinError
   | DuplicateAlias   Text
   | DuplicateLayer   Text
   | DuplicateSource  (Maybe Text)
+  | DuplicateKeyInSource (Maybe Text) [Keycode]
   | MissingAlias     Text
   | MissingLayer     Text
   | MissingSource    (Maybe Text)
   | MissingSetting   Text
   | DuplicateSetting Text
+  | DuplicateLayerSetting Text Text
   | InvalidOS        Text
+  | ImplArndDisabled
   | NestedTrans
   | InvalidComposeKey
   | LengthMismatch   Text Int Int
@@ -85,6 +88,9 @@ instance Show JoinError where
     DuplicateSource   t   -> case t of
       Just t  -> "Multiple sources of the same name: " <> T.unpack t
       Nothing -> "Multiple default sources"
+    DuplicateKeyInSource   t ks   -> case t of
+      Just t  -> "Keycodes appear multiple times in source `" <> T.unpack t <> "`:" <> ((' ' :) . show =<< ks)
+      Nothing -> "Keycodes appear multiple times in default source: " <> ((' ' :) . show =<< ks)
     MissingAlias      t   -> "Reference to non-existent alias: "     <> T.unpack t
     MissingLayer      t   -> "Reference to non-existent layer: "     <> T.unpack t
     MissingSource     t   -> case t of
@@ -92,7 +98,9 @@ instance Show JoinError where
       Nothing -> "Reference to non-existent default source"
     MissingSetting    t   -> "Missing setting in 'defcfg': "         <> T.unpack t
     DuplicateSetting  t   -> "Duplicate setting in 'defcfg': "       <> T.unpack t
+    DuplicateLayerSetting t s -> "Duplicate setting in 'deflayer '"  <> T.unpack t <> "': " <> T.unpack s
     InvalidOS         t   -> "Not available under this OS: "         <> T.unpack t
+    ImplArndDisabled      -> "Implicit around via `A` or `S-a` are disabled in your config"
     NestedTrans           -> "Encountered 'Transparent' ouside of top-level layer"
     InvalidComposeKey     -> "Encountered invalid button as Compose key"
     LengthMismatch t l s  -> mconcat
@@ -106,6 +114,7 @@ instance Exception JoinError
 -- | Joining Config
 data JCfg = JCfg
   { _cmpKey  :: Button  -- ^ How to prefix compose-sequences
+  , _implArnd :: ImplArnd -- ^ How to handle implicit `around`s
   , _kes     :: [KExpr] -- ^ The source expresions we operate on
   }
 makeLenses ''JCfg
@@ -113,6 +122,7 @@ makeLenses ''JCfg
 defJCfg :: [KExpr] ->JCfg
 defJCfg = JCfg
   (emitB KeyRightAlt)
+  IAAround
 
 -- | Monad in which we join, just Except over Reader
 newtype J a = J { unJ :: ExceptT JoinError (Reader JCfg) a }
@@ -197,12 +207,14 @@ joinConfig' = do
 -- | Return a JCfg with all settings from defcfg applied to the env's JCfg
 getOverride :: J JCfg
 getOverride = do
+  -- FIXME: duplicates don't throw errors
   env <- ask
   cfg <- oneBlock "defcfg" _KDefCfg
   let getB = joinButton [] M.empty
   let go e v = case v of
         SCmpSeq b  -> getB b >>= maybe (throwError InvalidComposeKey)
                                        (\b' -> pure $ set cmpKey b' e)
+        SImplArnd ia -> pure $ set implArnd ia e
         _ -> pure e
   foldM go env cfg
 
@@ -328,6 +340,12 @@ joinAliases ns als = foldM f M.empty $ concat als
 unnest :: J (Maybe Button) -> J Button
 unnest = (maybe (throwError NestedTrans) pure =<<)
 
+fromImplArnd :: DefButton -> DefButton -> ImplArnd -> J DefButton
+fromImplArnd _ _ IADisabled        = throwError ImplArndDisabled
+fromImplArnd o i IAAround          = pure $ KAround o i
+fromImplArnd o i IAAroundOnly      = pure $ KAroundOnly o i
+fromImplArnd o i IAAroundWhenAlone = pure $ KAroundWhenAlone o i
+
 -- | Turn a button token into an actual KMonad `Button` value
 joinButton :: LNames -> Aliases -> DefButton -> J (Maybe Button)
 joinButton ns als =
@@ -385,6 +403,9 @@ joinButton ns als =
     KTapHoldNextRelease ms t h mtb
       -> jst $ tapHoldNextRelease (fi ms) <$> go t <*> go h <*> traverse go mtb
     KTapNextPress t h  -> jst $ tapNextPress       <$> go t <*> go h
+    KAroundOnly o i    -> jst $ aroundOnly         <$> go o <*> go i
+    KAroundWhenAlone o i -> jst $ aroundWhenAlone  <$> go o <*> go i
+    KAroundImplicit o i  -> joinButton ns als =<< fromImplArnd o i =<< view implArnd
     KAroundNext b      -> jst $ aroundNext         <$> go b
     KAroundNextSingle b -> jst $ aroundNextSingle <$> go b
     KAroundNextTimeout ms b t -> jst $ aroundNextTimeout (fi ms) <$> go b <*> go t
@@ -409,9 +430,13 @@ joinSources :: [DefSrc] -> J Sources
 joinSources = foldM joiner mempty
   where
    joiner :: Sources -> DefSrc -> J Sources
-   joiner sources src@DefSrc{_srcName=n}
+   joiner sources src@DefSrc{ _srcName = n, _keycodes = ks }
      | n `M.member` sources = throwError $ DuplicateSource n
+     | not (null dups)      = throwError $ DuplicateKeyInSource n dups
      | otherwise            = pure $ M.insert n src sources
+    where
+     dups :: [Keycode]
+     dups = concatMap (take 1) . filter ((> 1) . length) . group . sort $ ks
 
 --------------------------------------------------------------------------------
 -- $kmap
@@ -437,7 +462,11 @@ joinLayer ::
   -> Sources                       -- ^ Mapping of names to source layer
   -> DefLayer                      -- ^ The layer token to join
   -> J (Text, [(Keycode, Button)]) -- ^ The resulting tuple
-joinLayer als ns srcs DefLayer{_layerName=n, _associatedSrcName=assocSrc, _buttons=bs} = do
+joinLayer als ns srcs l@(DefLayer n settings) = do
+  let bs = settings ^.. each . _LButton
+  assocSrc <- getAssocSrc l
+  implAround <- getImplAround l
+
   src <- case M.lookup assocSrc srcs of
     Just src -> pure $ src^.keycodes
     Nothing  -> throwError $ MissingSource assocSrc
@@ -449,8 +478,20 @@ joinLayer als ns srcs DefLayer{_layerName=n, _associatedSrcName=assocSrc, _butto
   let f acc (kc, b) = joinButton ns als b >>= \case
         Nothing -> pure acc
         Just b' -> pure $ (kc, b') : acc
-  (n,) <$> foldM f [] (zip src bs)
+  maybe id (local . set implArnd) implAround $
+    (n,) <$> foldM f [] (zip src bs)
 
+getAssocSrc :: DefLayer -> J (Maybe Text)
+getAssocSrc (DefLayer n settings) = case onlyOne (settings ^.. each . _LSrcName) of
+  Right x        -> pure $ Just x
+  Left None      -> pure Nothing
+  Left Duplicate -> throwError $ DuplicateLayerSetting n "source"
+
+getImplAround :: DefLayer -> J (Maybe ImplArnd)
+getImplAround (DefLayer n settings) = case onlyOne (settings ^.. each . _LImplArnd) of
+  Right x        -> pure $ Just x
+  Left None      -> pure Nothing
+  Left Duplicate -> throwError $ DuplicateLayerSetting n "implicit-around"
 
 --------------------------------------------------------------------------------
 -- $test

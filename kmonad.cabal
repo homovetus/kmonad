@@ -18,6 +18,8 @@ description:
 
 extra-source-files:
     changelog.md
+    doc/quick-reference.md
+    keymap/tutorial.kbd
 
 flag kext
     description: build against the kext [macOS only]
@@ -53,6 +55,7 @@ library
       ConstraintKinds
       DeriveFunctor
       DeriveGeneric
+      DeriveDataTypeable
       DeriveTraversable
       FlexibleContexts
       FlexibleInstances
@@ -61,6 +64,7 @@ library
       LambdaCase
       MultiParamTypeClasses
       MultiWayIf
+      NamedFieldPuns
       NoImplicitPrelude
       OverloadedStrings
       RankNTypes
@@ -174,8 +178,11 @@ test-suite spec
       base
     , kmonad
     , hspec
+    , rio
   other-modules:
+      KMonad.ButtonDocSpec
       KMonad.GestureSpec
+      KMonad.ComposeSeqSpec
   default-language:
       Haskell2010
   build-tool-depends: hspec-discover:hspec-discover == 2.*
@@ -183,6 +190,7 @@ test-suite spec
       ConstraintKinds
       DeriveFunctor
       DeriveGeneric
+      DeriveDataTypeable
       DeriveTraversable
       FlexibleContexts
       FlexibleInstances
@@ -191,6 +199,7 @@ test-suite spec
       LambdaCase
       MultiParamTypeClasses
       MultiWayIf
+      NamedFieldPuns
       NoImplicitPrelude
       OverloadedStrings
       RankNTypes
