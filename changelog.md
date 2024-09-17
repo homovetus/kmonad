@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0)
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.4.3 – 2024-09-11
+
+### Added
+
 - Added `stepped`. It performs the next button from a circular sequence
   whenever it is pressed.
 - Implemented named source blocks.
@@ -35,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0)
 - Fixed broken compose sequences (#823, #869)
 - Fixed parse errors when using keys only available on Darwin OS (#828)
 - Fixed `around-next` wasn't parsable (#857)
+- Fixed most buttons which behave weird in nested tap situations (#873)
 
 ## 0.4.2 – 2023-10-07
 
